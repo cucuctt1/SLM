@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import time
 from collections import Counter
 from tqdm import tqdm
 
@@ -52,6 +53,8 @@ def _compile_cpp_bpe(show_progress=True):
         src_m = os.path.getmtime(src)
         bin_m = os.path.getmtime(bin_path)
         if bin_m >= src_m:
+            if show_progress:
+                print("C++ BPE binary is up to date, skipping compile.")
             return bin_path
 
     check = os.system("g++ --version > /dev/null 2>&1")
@@ -61,9 +64,15 @@ def _compile_cpp_bpe(show_progress=True):
     cmd = f'g++ -O3 -std=c++17 "{src}" -o "{bin_path}"'
     if show_progress:
         print("Compiling C++ BPE backend...")
+    t0 = time.time()
     code = os.system(cmd)
+    dt = time.time() - t0
     if code != 0:
+        if show_progress:
+            print(f"C++ BPE compile failed (exit={code}) after {dt:.2f}s. Falling back to Python BPE.")
         return None
+    if show_progress:
+        print(f"C++ BPE compile finished in {dt:.2f}s")
     return bin_path
 
 
@@ -94,9 +103,17 @@ def _train_byte_level_bpe_cpp(text, target_vocab_size, reserved_special, min_pai
             f'"{bin_path}" "{input_path}" '
             f'{int(target_vocab_size)} {int(reserved_special)} {int(min_pair_freq)} "{output_path}"'
         )
+        if show_progress:
+            print("Running C++ BPE merge trainer...")
+        t0 = time.time()
         code = os.system(cmd)
+        dt = time.time() - t0
         if code != 0:
+            if show_progress:
+                print(f"C++ BPE trainer failed (exit={code}) after {dt:.2f}s. Falling back to Python BPE.")
             return None
+        if show_progress:
+            print(f"C++ BPE merge trainer finished in {dt:.2f}s")
 
         with open(output_path, "r", encoding="utf-8") as f:
             merges = json.load(f)
@@ -120,6 +137,8 @@ def _train_byte_level_bpe_cpp(text, target_vocab_size, reserved_special, min_pai
 
 def train_byte_level_bpe(text, target_vocab_size=50000, reserved_special=4, min_pair_freq=2, show_progress=True, prefer_cpp=True):
     if prefer_cpp and os.name == "posix":
+        if show_progress:
+            print("BPE backend preference: C++")
         cpp_result = _train_byte_level_bpe_cpp(
             text=text,
             target_vocab_size=target_vocab_size,
@@ -128,7 +147,12 @@ def train_byte_level_bpe(text, target_vocab_size=50000, reserved_special=4, min_
             show_progress=show_progress,
         )
         if cpp_result is not None:
+            if show_progress:
+                print("BPE backend used: C++")
             return cpp_result
+
+    if show_progress:
+        print("BPE backend used: Python")
 
     eow_id = 256
     base_vocab_size = 257

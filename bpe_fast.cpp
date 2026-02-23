@@ -173,8 +173,8 @@ int main(int argc, char** argv) {
         ++next_id;
 
         int done = static_cast<int>(merges.size());
-        if (done % 200 == 0 || done == total_target) {
-            std::cerr << "[BPE C++] merges: " << done << "/" << total_target << "\r";
+        if (done % 25 == 0 || done == total_target) {
+            std::cerr << "[BPE C++] merges: " << done << "/" << total_target << "\r" << std::flush;
         }
     }
 
