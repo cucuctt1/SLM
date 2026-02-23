@@ -1,4 +1,6 @@
 import json
+import os
+import tempfile
 from collections import Counter
 from tqdm import tqdm
 
@@ -34,7 +36,100 @@ def _merge_pair(corpus_words, pair, new_id):
     return new_corpus
 
 
-def train_byte_level_bpe(text, target_vocab_size=50000, reserved_special=4, min_pair_freq=2, show_progress=True):
+def _get_cpp_paths():
+    base = os.path.dirname(os.path.abspath(__file__))
+    src = os.path.join(base, "bpe_fast.cpp")
+    bin_path = os.path.join(base, "bpe_fast")
+    return src, bin_path
+
+
+def _compile_cpp_bpe(show_progress=True):
+    src, bin_path = _get_cpp_paths()
+    if not os.path.exists(src):
+        return None
+
+    if os.path.exists(bin_path):
+        src_m = os.path.getmtime(src)
+        bin_m = os.path.getmtime(bin_path)
+        if bin_m >= src_m:
+            return bin_path
+
+    check = os.system("g++ --version > /dev/null 2>&1")
+    if check != 0:
+        return None
+
+    cmd = f'g++ -O3 -std=c++17 "{src}" -o "{bin_path}"'
+    if show_progress:
+        print("Compiling C++ BPE backend...")
+    code = os.system(cmd)
+    if code != 0:
+        return None
+    return bin_path
+
+
+def _rebuild_token_to_bytes_from_merges(merges, eow_id=256):
+    token_to_bytes = {i: [i] for i in range(256)}
+    token_to_bytes[eow_id] = []
+    for m in merges:
+        a, b = m["pair"]
+        nid = m["new_id"]
+        token_to_bytes[nid] = token_to_bytes.get(a, []) + token_to_bytes.get(b, [])
+    return token_to_bytes
+
+
+def _train_byte_level_bpe_cpp(text, target_vocab_size, reserved_special, min_pair_freq, show_progress):
+    bin_path = _compile_cpp_bpe(show_progress=show_progress)
+    if bin_path is None:
+        return None
+
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, suffix=".txt") as tf_in:
+        tf_in.write(text)
+        input_path = tf_in.name
+
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False, suffix=".json") as tf_out:
+        output_path = tf_out.name
+
+    try:
+        cmd = (
+            f'"{bin_path}" "{input_path}" '
+            f'{int(target_vocab_size)} {int(reserved_special)} {int(min_pair_freq)} "{output_path}"'
+        )
+        code = os.system(cmd)
+        if code != 0:
+            return None
+
+        with open(output_path, "r", encoding="utf-8") as f:
+            merges = json.load(f)
+
+        eow_id = 256
+        token_to_bytes = _rebuild_token_to_bytes_from_merges(merges, eow_id=eow_id)
+        next_id = 257 + len(merges)
+
+        return {
+            "merges": merges,
+            "token_to_bytes": {str(k): v for k, v in token_to_bytes.items()},
+            "vocab_size_without_specials": next_id,
+            "eow_id": eow_id,
+        }
+    finally:
+        if os.path.exists(input_path):
+            os.remove(input_path)
+        if os.path.exists(output_path):
+            os.remove(output_path)
+
+
+def train_byte_level_bpe(text, target_vocab_size=50000, reserved_special=4, min_pair_freq=2, show_progress=True, prefer_cpp=True):
+    if prefer_cpp and os.name == "posix":
+        cpp_result = _train_byte_level_bpe_cpp(
+            text=text,
+            target_vocab_size=target_vocab_size,
+            reserved_special=reserved_special,
+            min_pair_freq=min_pair_freq,
+            show_progress=show_progress,
+        )
+        if cpp_result is not None:
+            return cpp_result
+
     eow_id = 256
     base_vocab_size = 257
     max_bpe_tokens = max(base_vocab_size, target_vocab_size - reserved_special)

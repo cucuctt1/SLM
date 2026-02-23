@@ -90,6 +90,7 @@ class ByteLevelBPETokenizer:
             reserved_special=4,
             min_pair_freq=2,
             show_progress=True,
+            prefer_cpp=True,
         )
         self.merges = bpe_state["merges"]
         self.token_to_bytes = bpe_state["token_to_bytes"]
