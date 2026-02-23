@@ -1,23 +1,24 @@
 import json
 from collections import Counter
+from tqdm import tqdm
 
 
 def _get_stats(corpus_words):
     stats = Counter()
-    for w in corpus_words:
+    for w, freq in corpus_words.items():
         if len(w) < 2:
             continue
         for i in range(len(w) - 1):
-            stats[(w[i], w[i + 1])] += 1
+            stats[(w[i], w[i + 1])] += freq
     return stats
 
 
 def _merge_pair(corpus_words, pair, new_id):
     a, b = pair
-    new_corpus = []
-    for w in corpus_words:
+    new_corpus = {}
+    for w, freq in corpus_words.items():
         if len(w) < 2:
-            new_corpus.append(w)
+            new_corpus[w] = new_corpus.get(w, 0) + freq
             continue
         merged = []
         i = 0
@@ -28,27 +29,31 @@ def _merge_pair(corpus_words, pair, new_id):
             else:
                 merged.append(w[i])
                 i += 1
-        new_corpus.append(merged)
+        merged_t = tuple(merged)
+        new_corpus[merged_t] = new_corpus.get(merged_t, 0) + freq
     return new_corpus
 
 
-def train_byte_level_bpe(text, target_vocab_size=50000, reserved_special=4, min_pair_freq=2):
+def train_byte_level_bpe(text, target_vocab_size=50000, reserved_special=4, min_pair_freq=2, show_progress=True):
     eow_id = 256
     base_vocab_size = 257
     max_bpe_tokens = max(base_vocab_size, target_vocab_size - reserved_special)
 
     words = [w for w in text.split() if w]
-    corpus_words = []
-    for w in words:
-        ids = list(w.encode("utf-8", errors="ignore"))
-        ids.append(eow_id)
-        corpus_words.append(ids)
+    word_counter = Counter(words)
+    corpus_words = {}
+    for w, freq in word_counter.items():
+        ids = tuple(list(w.encode("utf-8", errors="ignore")) + [eow_id])
+        corpus_words[ids] = corpus_words.get(ids, 0) + int(freq)
 
     merges = []
     token_to_bytes = {i: [i] for i in range(256)}
     token_to_bytes[eow_id] = []
 
     next_id = base_vocab_size
+
+    total_merges = max_bpe_tokens - base_vocab_size
+    pbar = tqdm(total=total_merges, desc="BPE merges", leave=False) if show_progress else None
 
     while next_id < max_bpe_tokens:
         stats = _get_stats(corpus_words)
@@ -64,6 +69,11 @@ def train_byte_level_bpe(text, target_vocab_size=50000, reserved_special=4, min_
         token_to_bytes[next_id] = left_bytes + right_bytes
         merges.append({"pair": [int(best_pair[0]), int(best_pair[1])], "new_id": int(next_id), "freq": int(freq)})
         next_id += 1
+        if pbar is not None:
+            pbar.update(1)
+
+    if pbar is not None:
+        pbar.close()
 
     return {
         "merges": merges,

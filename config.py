@@ -41,6 +41,7 @@ class Config:
         self.val_tokens_path = "/content/data/val_tokens.npy"
         self.train_split = 0.9
         self.max_corpus_chars = 120_000_000
+        self.tokenizer_train_chars = 20_000_000
 
         self.checkpoint_dir = "/content/checkpoints"
         self.tokenizer_dir = "/content/tokenizer"

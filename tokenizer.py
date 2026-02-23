@@ -1,5 +1,7 @@
 import os
 import json
+import numpy as np
+from tqdm import tqdm
 
 from bpe import train_byte_level_bpe, apply_bpe_to_word, save_bpe_files, load_bpe_files
 
@@ -28,6 +30,8 @@ class ByteLevelBPETokenizer:
         self.vocab = {}
         self.id_to_token = {}
         self.eow_id = 256
+        self.word_cache = {}
+        self.max_word_cache_size = 200_000
 
     def _build_vocab_maps(self):
         self.vocab = {}
@@ -85,6 +89,7 @@ class ByteLevelBPETokenizer:
             target_vocab_size=self.vocab_size,
             reserved_special=4,
             min_pair_freq=2,
+            show_progress=True,
         )
         self.merges = bpe_state["merges"]
         self.token_to_bytes = bpe_state["token_to_bytes"]
@@ -111,7 +116,12 @@ class ByteLevelBPETokenizer:
 
         words = [w for w in text.split() if w]
         for w in words:
-            bpe_ids = apply_bpe_to_word(w, self.merges_ranked, eow_id=self.eow_id)
+            bpe_ids = self.word_cache.get(w)
+            if bpe_ids is None:
+                bpe_ids = apply_bpe_to_word(w, self.merges_ranked, eow_id=self.eow_id)
+                if len(self.word_cache) >= self.max_word_cache_size:
+                    self.word_cache.clear()
+                self.word_cache[w] = bpe_ids
             for tid in bpe_ids:
                 if tid < self.vocab_size:
                     token_ids.append(tid)
@@ -184,6 +194,46 @@ class ByteLevelBPETokenizer:
             "attention_mask": attention_masks,
         }
 
+    def encode_lines_to_numpy(self, lines, add_bos=True, add_eos=True, dtype=np.int32, merge_every=4096, show_progress=False, total_lines=None):
+        chunks = []
+        if add_bos:
+            chunks.append(np.array([self.bos_id], dtype=dtype))
+
+        pending = []
+        iterator = tqdm(lines, total=total_lines, desc="Tokenizing corpus", leave=False) if show_progress else lines
+        for line in iterator:
+            if not line:
+                continue
+            encoded = self.encode(
+                line,
+                add_special_tokens=False,
+                max_length=10_000_000_000,
+                padding=False,
+                truncation=False,
+            )
+            ids = encoded["input_ids"]
+            if not ids:
+                continue
+            pending.append(np.asarray(ids, dtype=dtype))
+
+            if len(pending) >= merge_every:
+                chunks.append(np.concatenate(pending, axis=0))
+                pending = []
+
+        if pending:
+            chunks.append(np.concatenate(pending, axis=0))
+
+        if add_eos:
+            chunks.append(np.array([self.eos_id], dtype=dtype))
+
+        if not chunks:
+            return np.array([], dtype=dtype)
+
+        if len(chunks) == 1:
+            return chunks[0]
+
+        return np.concatenate(chunks, axis=0)
+
     def save(self, output_dir):
         os.makedirs(output_dir, exist_ok=True)
         merges_dump = self.merges
@@ -223,6 +273,17 @@ class ByteLevelBPETokenizer:
         self.byte_string_to_id = {}
         for k, byte_seq in self.token_to_bytes.items():
             self.byte_string_to_id[bytes(byte_seq)] = int(k)
+        self.word_cache = {}
+
+    def try_load(self, output_dir):
+        vocab_path = os.path.join(output_dir, "vocab.json")
+        merges_path = os.path.join(output_dir, "merges.json")
+        if not (os.path.exists(vocab_path) and os.path.exists(merges_path)):
+            return False
+        self.load(output_dir)
+        if len(self.vocab) != self.vocab_size:
+            return False
+        return True
 
     def get_state(self):
         return {

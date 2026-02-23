@@ -189,16 +189,12 @@ def main():
     print(f"Corpus lines={num_lines:,}, chars={num_chars:,}, path={corpus_path}")
 
     tokenizer = ByteLevelBPETokenizer(vocab_size=cfg.vocab_size, context_length=cfg.context_length)
-    vocab_file = os.path.join(cfg.tokenizer_dir, "vocab.json")
-    merges_file = os.path.join(cfg.tokenizer_dir, "merges.json")
-
-    if os.path.exists(vocab_file) and os.path.exists(merges_file):
+    if tokenizer.try_load(cfg.tokenizer_dir):
         print(f"[{timestamp()}] Loading existing tokenizer...")
-        tokenizer.load(cfg.tokenizer_dir)
     else:
         print(f"[{timestamp()}] Training byte-level BPE tokenizer to vocab={cfg.vocab_size}...")
         with open(corpus_path, "r", encoding="utf-8", errors="ignore") as f:
-            corpus_text = f.read()
+            corpus_text = f.read(getattr(cfg, "tokenizer_train_chars", 20_000_000))
         tokenizer.train(corpus_text)
         tokenizer.save(cfg.tokenizer_dir)
 

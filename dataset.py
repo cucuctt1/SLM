@@ -181,18 +181,22 @@ def build_english_corpus(extract_dir, corpus_path, max_chars=120_000_000):
 
 
 def prepare_train_val_tokens(corpus_path, tokenizer, train_tokens_path, val_tokens_path, train_split=0.9):
+    if os.path.exists(train_tokens_path) and os.path.exists(val_tokens_path):
+        train_ids = np.load(train_tokens_path, mmap_mode="r")
+        val_ids = np.load(val_tokens_path, mmap_mode="r")
+        return int(train_ids.shape[0]), int(val_ids.shape[0])
+
     with open(corpus_path, "r", encoding="utf-8", errors="ignore") as f:
-        corpus_text = f.read()
-
-    tokenized = tokenizer.encode(
-        corpus_text,
-        add_special_tokens=True,
-        max_length=10_000_000_000,
-        padding=False,
-        truncation=False,
-    )
-
-    ids = np.array(tokenized["input_ids"], dtype=np.int32)
+        line_iter = tqdm(f, desc="Reading corpus", leave=False)
+        cleaned_lines = (clean_text(line) for line in line_iter)
+        ids = tokenizer.encode_lines_to_numpy(
+            cleaned_lines,
+            add_bos=True,
+            add_eos=True,
+            dtype=np.int32,
+            merge_every=4096,
+            show_progress=False,
+        )
     split_idx = int(len(ids) * train_split)
     split_idx = max(2, min(split_idx, len(ids) - 2))
 
