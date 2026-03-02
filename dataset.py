@@ -90,6 +90,7 @@ def _hf_fetch_rows(
     url = f"{base}?{query}"
 
     attempt = 0
+    requested_length = int(length)
     while True:
         req = Request(url, headers={"User-Agent": "slm-trainer/1.0"})
         try:
@@ -98,6 +99,38 @@ def _hf_fetch_rows(
             data = json.loads(payload)
             return data.get("rows", [])
         except HTTPError as e:
+            if e.code == 422:
+                body = ""
+                try:
+                    if e.fp is not None:
+                        body = e.fp.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    body = ""
+
+                # HF rows endpoint can reject large length values (common upper bound ~100)
+                if requested_length > 100:
+                    fallback_length = 100
+                    print(
+                        f"[HF] HTTP 422 at offset={offset} with length={requested_length}. "
+                        f"Retrying with length={fallback_length}."
+                    )
+                    return _hf_fetch_rows(
+                        dataset_name=dataset_name,
+                        config_name=config_name,
+                        split_name=split_name,
+                        offset=offset,
+                        length=fallback_length,
+                        timeout=timeout,
+                        max_retries=max_retries,
+                        base_delay=base_delay,
+                        max_delay=max_delay,
+                    )
+
+                raise RuntimeError(
+                    f"HF rows API returned 422 for dataset={dataset_name}, config={config_name}, "
+                    f"split={split_name}, offset={offset}, length={requested_length}. Body: {body[:500]}"
+                ) from e
+
             retryable = e.code == 429 or 500 <= e.code < 600
             if not retryable or attempt >= max_retries:
                 raise
@@ -254,9 +287,13 @@ def build_ultrachat_messages_corpus(
     if chars > 0:
         pbar.update(min(chars, max_chars))
 
+    effective_page_size = int(max(1, min(int(page_size), 100)))
+    if effective_page_size != int(page_size):
+        print(f"[DATA] Adjusted hf_page_size from {int(page_size)} to {effective_page_size} (HF rows limit)")
+
     with open(corpus_path, mode, encoding="utf-8") as out:
         while chars < max_chars:
-            rows = _hf_fetch_rows(dataset_name, config_name, chosen_split, offset=offset, length=page_size)
+            rows = _hf_fetch_rows(dataset_name, config_name, chosen_split, offset=offset, length=effective_page_size)
             if not rows:
                 break
 
