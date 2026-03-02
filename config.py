@@ -10,14 +10,13 @@ class Config:
         self.vocab_size = 50_000
         self.context_length = 512
 
-        self.n_layers = 24
-        self.d_model = 1024
-        self.n_heads = 16
-        self.d_ff = 4096
         self.dropout = 0.1
         self.bias = True
-
-        self.batch_size = 2
+        self.n_layers = 8
+        self.d_model = 512
+        self.n_heads = 8
+        self.d_ff = 2048
+        self.batch_size = 8
         self.grad_accum_steps = 16
         self.eval_batch_size = 2
         self.epochs = 8
@@ -33,7 +32,10 @@ class Config:
         self.use_amp = True
         self.grad_checkpointing = False
 
-        self.dataset_slug = "thoughtvector/customer-support-on-twitter"
+        self.dataset_source = "huggingface"
+        self.dataset_slug = "HuggingFaceH4/ultrachat_200k"
+        self.hf_config_name = "default"
+        self.hf_split_candidates = ["train_sft", "train", "train_gen", "test_sft", "test"]
         self.dataset_download_dir = "/content/data"
         self.dataset_extract_dir = "/content/data/extracted"
         self.corpus_path = "/content/data/corpus.txt"
@@ -43,14 +45,14 @@ class Config:
         self.max_corpus_chars = 60_000_000
         self.tokenizer_train_chars = 20_000_000
         self.use_sentencepiece_package = True
-        self.force_retrain_tokenizer = True
-        self.force_retokenize = True
+        self.force_retrain_tokenizer = False
+        self.force_retokenize = False
 
         self.checkpoint_dir = "/content/checkpoints"
         self.tokenizer_dir = "/content/tokenizer"
 
-        self.eval_every_epochs = 2
-        self.generate_prompt = "Once upon a time"
+        self.eval_every_epochs = 1
+        self.generate_prompt = "User: Explain what overfitting is in simple terms.\nAssistant:"
         self.generate_max_new_tokens = 120
         self.generate_temperature = 0.9
         self.generate_top_k = 40

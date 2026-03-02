@@ -36,8 +36,11 @@ def load_int4_model(quantized_checkpoint_path, device):
 
 
 def generate_text(model, tokenizer, prompt, device, max_new_tokens=120, temperature=0.9, top_k=40):
-    encoded = tokenizer.encode(prompt, add_special_tokens=True, max_length=256, padding=False, truncation=True)
-    input_ids = torch.tensor([encoded["input_ids"]], dtype=torch.long, device=device)
+    chat_prompt = prompt if "Assistant:" in prompt else f"User: {prompt}\nAssistant:"
+    context_length = getattr(model.cfg, "context_length", 512)
+    encoded = tokenizer.encode(chat_prompt, add_special_tokens=True, max_length=10_000_000_000, padding=False, truncation=False)
+    prompt_ids = encoded["input_ids"][-context_length:]
+    input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
 
     with torch.no_grad():
         out_ids = model.generate(
@@ -67,7 +70,7 @@ def main():
         _, tokenizer, model = load_full_precision_model(latest, device)
         print("Loaded full precision model")
 
-    prompt = "In a distant future"
+    prompt = cfg.generate_prompt
     out = generate_text(
         model=model,
         tokenizer=tokenizer,

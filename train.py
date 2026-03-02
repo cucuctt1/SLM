@@ -9,6 +9,7 @@ from tokenizer import ByteLevelBPETokenizer
 from dataset import (
     download_and_extract_kaggle_dataset,
     build_english_corpus,
+    build_ultrachat_messages_corpus,
     prepare_train_val_tokens,
     create_dataloaders,
 )
@@ -50,8 +51,10 @@ def evaluate(model, val_loader, device, max_batches=100):
 def generate_sample(model, tokenizer, prompt, cfg, device):
     set_seed(cfg.seed)
     model.eval()
-    encoded = tokenizer.encode(prompt, add_special_tokens=True, max_length=cfg.context_length, padding=False, truncation=True)
-    input_ids = torch.tensor([encoded["input_ids"]], dtype=torch.long, device=device)
+    chat_prompt = prompt if "Assistant:" in prompt else f"User: {prompt}\nAssistant:"
+    encoded = tokenizer.encode(chat_prompt, add_special_tokens=True, max_length=10_000_000_000, padding=False, truncation=False)
+    prompt_ids = encoded["input_ids"][-cfg.context_length :]
+    input_ids = torch.tensor([prompt_ids], dtype=torch.long, device=device)
     with torch.no_grad():
         out_ids = model.generate(
             input_ids,
@@ -172,20 +175,31 @@ def main():
     print(f"[{timestamp()}] Device: {device}")
     print(f"[{timestamp()}] Config param estimate (12*L*d^2): {cfg.target_param_estimate:,}")
 
-    print(f"[{timestamp()}] Downloading and extracting Kaggle dataset...")
-    extract_dir = download_and_extract_kaggle_dataset(
-        dataset_slug=cfg.dataset_slug,
-        download_dir=cfg.dataset_download_dir,
-        extract_dir=cfg.dataset_extract_dir,
-        force=False,
-    )
+    if getattr(cfg, "dataset_source", "kaggle") == "huggingface":
+        print(f"[{timestamp()}] Building corpus from Hugging Face UltraChat messages...")
+        corpus_path, num_lines, num_chars = build_ultrachat_messages_corpus(
+            dataset_name=cfg.dataset_slug,
+            corpus_path=cfg.corpus_path,
+            max_chars=cfg.max_corpus_chars,
+            config_name=getattr(cfg, "hf_config_name", "default"),
+            split_candidates=getattr(cfg, "hf_split_candidates", None),
+            page_size=100,
+        )
+    else:
+        print(f"[{timestamp()}] Downloading and extracting Kaggle dataset...")
+        extract_dir = download_and_extract_kaggle_dataset(
+            dataset_slug=cfg.dataset_slug,
+            download_dir=cfg.dataset_download_dir,
+            extract_dir=cfg.dataset_extract_dir,
+            force=False,
+        )
 
-    print(f"[{timestamp()}] Building merged English corpus...")
-    corpus_path, num_lines, num_chars = build_english_corpus(
-        extract_dir=extract_dir,
-        corpus_path=cfg.corpus_path,
-        max_chars=cfg.max_corpus_chars,
-    )
+        print(f"[{timestamp()}] Building merged English corpus...")
+        corpus_path, num_lines, num_chars = build_english_corpus(
+            extract_dir=extract_dir,
+            corpus_path=cfg.corpus_path,
+            max_chars=cfg.max_corpus_chars,
+        )
     print(f"Corpus lines={num_lines:,}, chars={num_chars:,}, path={corpus_path}")
 
     tokenizer = ByteLevelBPETokenizer(vocab_size=cfg.vocab_size, context_length=cfg.context_length)

@@ -7,6 +7,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 
 def authenticate_kaggle():
@@ -63,6 +65,139 @@ def clean_text(text):
     text = text.replace("\r", " ").replace("\n", " ").replace("\t", " ")
     text = " ".join(text.split())
     return text.strip()
+
+
+def _hf_fetch_rows(dataset_name, config_name, split_name, offset, length, timeout=60):
+    base = "https://datasets-server.huggingface.co/rows"
+    query = (
+        f"dataset={quote(dataset_name, safe='')}&"
+        f"config={quote(config_name, safe='')}&"
+        f"split={quote(split_name, safe='')}&"
+        f"offset={int(offset)}&length={int(length)}"
+    )
+    url = f"{base}?{query}"
+    req = Request(url, headers={"User-Agent": "slm-trainer/1.0"})
+    with urlopen(req, timeout=timeout) as resp:
+        payload = resp.read().decode("utf-8", errors="ignore")
+    data = json.loads(payload)
+    return data.get("rows", [])
+
+
+def _extract_messages_text(row_obj):
+    if not isinstance(row_obj, dict):
+        return ""
+
+    messages = row_obj.get("messages")
+    if isinstance(messages, str):
+        try:
+            messages = json.loads(messages)
+        except Exception:
+            messages = [messages]
+
+    if not isinstance(messages, list):
+        return ""
+
+    parts = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                joined = []
+                for c in content:
+                    if isinstance(c, dict):
+                        t = c.get("text", "")
+                        if t:
+                            joined.append(str(t))
+                    elif c is not None:
+                        joined.append(str(c))
+                content = " ".join(joined)
+            text = clean_text(content)
+            if text:
+                parts.append(text)
+        elif msg is not None:
+            text = clean_text(str(msg))
+            if text:
+                parts.append(text)
+
+    return " ".join(parts)
+
+
+def build_ultrachat_messages_corpus(
+    dataset_name,
+    corpus_path,
+    max_chars=60_000_000,
+    config_name="default",
+    split_candidates=None,
+    page_size=100,
+):
+    if split_candidates is None:
+        split_candidates = ["train_sft", "train", "train_gen", "test_sft", "test"]
+
+    os.makedirs(os.path.dirname(corpus_path), exist_ok=True)
+
+    chosen_split = None
+    for sp in split_candidates:
+        try:
+            rows = _hf_fetch_rows(dataset_name, config_name, sp, offset=0, length=1)
+            if rows is not None:
+                chosen_split = sp
+                break
+        except Exception:
+            continue
+
+    if chosen_split is None:
+        raise RuntimeError(
+            f"Could not access HF dataset rows for {dataset_name}. "
+            f"Tried splits: {split_candidates}"
+        )
+
+    print(f"[DATA] Using HF dataset={dataset_name}, config={config_name}, split={chosen_split}")
+    print(f"[DATA] Building corpus from messages column (target chars={max_chars:,})")
+
+    lines = []
+    chars = 0
+    offset = 0
+
+    pbar = tqdm(total=max_chars, desc="HF messages -> corpus chars", leave=False)
+
+    while chars < max_chars:
+        rows = _hf_fetch_rows(dataset_name, config_name, chosen_split, offset=offset, length=page_size)
+        if not rows:
+            break
+
+        consumed = 0
+        for item in rows:
+            row_obj = item.get("row", item)
+            text = _extract_messages_text(row_obj)
+            if not text:
+                consumed += 1
+                continue
+
+            lines.append(text)
+            n = len(text) + 1
+            chars += n
+            pbar.update(min(n, max_chars - pbar.n))
+            consumed += 1
+
+            if chars >= max_chars:
+                break
+
+        offset += consumed
+        pbar.set_postfix(rows=f"{offset:,}", lines=f"{len(lines):,}")
+
+        if consumed == 0:
+            break
+
+    pbar.close()
+
+    if not lines:
+        raise ValueError("No usable messages found in Hugging Face dataset.")
+
+    with open(corpus_path, "w", encoding="utf-8") as f:
+        for ln in lines:
+            f.write(ln + "\n")
+
+    return corpus_path, len(lines), chars
 
 
 def _find_candidate_files(root_dir):
@@ -222,17 +357,23 @@ def prepare_train_val_tokens(corpus_path, tokenizer, train_tokens_path, val_toke
 
 class LanguageModelingDataset(Dataset):
     def __init__(self, tokens_path, context_length):
-        self.tokens = np.load(tokens_path, mmap_mode="r")
+        tokens = np.load(tokens_path, mmap_mode="r")
         self.context_length = context_length
-        self.length = max(1, len(self.tokens) - context_length - 1)
+
+        usable_tokens = (len(tokens) // context_length) * context_length
+        tokens = tokens[:usable_tokens]
+
+        self.tokens = tokens.reshape(-1, context_length)
+        self.length = self.tokens.shape[0]
 
     def __len__(self):
         return self.length
 
     def __getitem__(self, idx):
-        x = self.tokens[idx : idx + self.context_length].astype(np.int64)
-        y = self.tokens[idx + 1 : idx + 1 + self.context_length].astype(np.int64)
-        return torch.from_numpy(x), torch.from_numpy(y)
+        x = self.tokens[idx]
+        y = np.roll(x, -1)
+        y[-1] = 0
+        return torch.from_numpy(x.astype(np.int64)), torch.from_numpy(y.astype(np.int64))
 
 
 def create_dataloaders(train_tokens_path, val_tokens_path, context_length, batch_size, eval_batch_size):
