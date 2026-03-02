@@ -183,7 +183,10 @@ def main():
             max_chars=cfg.max_corpus_chars,
             config_name=getattr(cfg, "hf_config_name", "default"),
             split_candidates=getattr(cfg, "hf_split_candidates", None),
-            page_size=100,
+            page_size=getattr(cfg, "hf_page_size", 1000),
+            request_sleep=getattr(cfg, "hf_request_sleep", 0.20),
+            resume_stream=bool(getattr(cfg, "hf_resume_stream", True)),
+            force_rebuild=bool(getattr(cfg, "hf_force_rebuild_corpus", False)),
         )
     else:
         print(f"[{timestamp()}] Downloading and extracting Kaggle dataset...")

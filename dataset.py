@@ -175,11 +175,38 @@ def build_ultrachat_messages_corpus(
     split_candidates=None,
     page_size=100,
     request_sleep=0.15,
+    resume_stream=True,
+    force_rebuild=False,
 ):
     if split_candidates is None:
         split_candidates = ["train_sft", "train", "train_gen", "test_sft", "test"]
 
     os.makedirs(os.path.dirname(corpus_path), exist_ok=True)
+
+    safe_name = dataset_name.replace("/", "__")
+    meta_path = corpus_path + f".{safe_name}.stream_meta.json"
+    done_path = corpus_path + f".{safe_name}.done"
+
+    if (not force_rebuild) and os.path.exists(done_path) and os.path.exists(corpus_path):
+        chars = os.path.getsize(corpus_path)
+        lines = 0
+        try:
+            with open(meta_path, "r", encoding="utf-8") as mf:
+                meta = json.load(mf)
+                lines = int(meta.get("lines", 0))
+                chars = int(meta.get("chars", chars))
+        except Exception:
+            pass
+        print(f"[DATA] Reusing existing HF corpus: {corpus_path} (lines={lines:,}, chars={chars:,})")
+        return corpus_path, lines, chars
+
+    if force_rebuild:
+        for p in [corpus_path, meta_path, done_path]:
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
 
     chosen_split = None
     for sp in split_candidates:
@@ -200,53 +227,101 @@ def build_ultrachat_messages_corpus(
     print(f"[DATA] Using HF dataset={dataset_name}, config={config_name}, split={chosen_split}")
     print(f"[DATA] Building corpus from messages column (target chars={max_chars:,})")
 
-    lines = []
     chars = 0
+    lines = 0
     offset = 0
 
+    mode = "w"
+    if resume_stream and os.path.exists(corpus_path) and os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as mf:
+                meta = json.load(mf)
+            if (
+                meta.get("dataset_name") == dataset_name
+                and meta.get("config_name") == config_name
+                and meta.get("split") == chosen_split
+                and int(meta.get("max_chars", -1)) == int(max_chars)
+            ):
+                offset = int(meta.get("offset", 0))
+                lines = int(meta.get("lines", 0))
+                chars = int(meta.get("chars", 0))
+                mode = "a"
+                print(f"[DATA] Resuming HF stream from offset={offset:,}, lines={lines:,}, chars={chars:,}")
+        except Exception:
+            mode = "w"
+
     pbar = tqdm(total=max_chars, desc="HF messages -> corpus chars", leave=False)
+    if chars > 0:
+        pbar.update(min(chars, max_chars))
 
-    while chars < max_chars:
-        rows = _hf_fetch_rows(dataset_name, config_name, chosen_split, offset=offset, length=page_size)
-        if not rows:
-            break
-
-        consumed = 0
-        for item in rows:
-            row_obj = item.get("row", item)
-            text = _extract_messages_text(row_obj)
-            if not text:
-                consumed += 1
-                continue
-
-            lines.append(text)
-            n = len(text) + 1
-            chars += n
-            pbar.update(min(n, max_chars - pbar.n))
-            consumed += 1
-
-            if chars >= max_chars:
+    with open(corpus_path, mode, encoding="utf-8") as out:
+        while chars < max_chars:
+            rows = _hf_fetch_rows(dataset_name, config_name, chosen_split, offset=offset, length=page_size)
+            if not rows:
                 break
 
-        offset += consumed
-        pbar.set_postfix(rows=f"{offset:,}", lines=f"{len(lines):,}")
+            consumed = 0
+            for item in rows:
+                row_obj = item.get("row", item)
+                text = _extract_messages_text(row_obj)
+                if not text:
+                    consumed += 1
+                    continue
 
-        if consumed == 0:
-            break
+                n = len(text) + 1
+                if chars + n > max_chars:
+                    remain = max_chars - chars
+                    if remain > 1:
+                        clipped = text[: remain - 1]
+                        out.write(clipped + "\n")
+                        lines += 1
+                        chars += len(clipped) + 1
+                        pbar.update(min(len(clipped) + 1, max_chars - pbar.n))
+                    consumed += 1
+                    break
 
-        if request_sleep > 0:
-            time.sleep(request_sleep)
+                out.write(text + "\n")
+                lines += 1
+                chars += n
+                pbar.update(min(n, max_chars - pbar.n))
+                consumed += 1
+
+                if chars >= max_chars:
+                    break
+
+            offset += consumed
+            pbar.set_postfix(rows=f"{offset:,}", lines=f"{lines:,}")
+
+            with open(meta_path, "w", encoding="utf-8") as mf:
+                json.dump(
+                    {
+                        "dataset_name": dataset_name,
+                        "config_name": config_name,
+                        "split": chosen_split,
+                        "max_chars": int(max_chars),
+                        "offset": int(offset),
+                        "lines": int(lines),
+                        "chars": int(chars),
+                        "updated_at": time.time(),
+                    },
+                    mf,
+                )
+
+            if consumed == 0:
+                break
+
+            if request_sleep > 0:
+                time.sleep(request_sleep)
 
     pbar.close()
 
-    if not lines:
+    if lines == 0:
         raise ValueError("No usable messages found in Hugging Face dataset.")
 
-    with open(corpus_path, "w", encoding="utf-8") as f:
-        for ln in lines:
-            f.write(ln + "\n")
+    with open(done_path, "w", encoding="utf-8") as df:
+        df.write("done")
 
-    return corpus_path, len(lines), chars
+    return corpus_path, int(lines), int(chars)
 
 
 def _find_candidate_files(root_dir):

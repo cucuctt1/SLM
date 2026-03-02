@@ -36,6 +36,10 @@ class Config:
         self.dataset_slug = "HuggingFaceH4/ultrachat_200k"
         self.hf_config_name = "default"
         self.hf_split_candidates = ["train_sft", "train", "train_gen", "test_sft", "test"]
+        self.hf_page_size = 1000
+        self.hf_request_sleep = 0.20
+        self.hf_resume_stream = True
+        self.hf_force_rebuild_corpus = False
         self.dataset_download_dir = "/content/data"
         self.dataset_extract_dir = "/content/data/extracted"
         self.corpus_path = "/content/data/corpus.txt"
