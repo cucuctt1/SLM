@@ -1,6 +1,7 @@
 import os
 import json
 import random
+import time
 import csv
 import zipfile
 import numpy as np
@@ -9,6 +10,7 @@ from torch.utils.data import Dataset
 from tqdm import tqdm
 from urllib.parse import quote
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 
 def authenticate_kaggle():
@@ -67,7 +69,17 @@ def clean_text(text):
     return text.strip()
 
 
-def _hf_fetch_rows(dataset_name, config_name, split_name, offset, length, timeout=60):
+def _hf_fetch_rows(
+    dataset_name,
+    config_name,
+    split_name,
+    offset,
+    length,
+    timeout=60,
+    max_retries=8,
+    base_delay=2.0,
+    max_delay=60.0,
+):
     base = "https://datasets-server.huggingface.co/rows"
     query = (
         f"dataset={quote(dataset_name, safe='')}&"
@@ -76,11 +88,44 @@ def _hf_fetch_rows(dataset_name, config_name, split_name, offset, length, timeou
         f"offset={int(offset)}&length={int(length)}"
     )
     url = f"{base}?{query}"
-    req = Request(url, headers={"User-Agent": "slm-trainer/1.0"})
-    with urlopen(req, timeout=timeout) as resp:
-        payload = resp.read().decode("utf-8", errors="ignore")
-    data = json.loads(payload)
-    return data.get("rows", [])
+
+    attempt = 0
+    while True:
+        req = Request(url, headers={"User-Agent": "slm-trainer/1.0"})
+        try:
+            with urlopen(req, timeout=timeout) as resp:
+                payload = resp.read().decode("utf-8", errors="ignore")
+            data = json.loads(payload)
+            return data.get("rows", [])
+        except HTTPError as e:
+            retryable = e.code == 429 or 500 <= e.code < 600
+            if not retryable or attempt >= max_retries:
+                raise
+
+            retry_after = 0.0
+            try:
+                if e.headers is not None:
+                    ra = e.headers.get("Retry-After")
+                    if ra is not None:
+                        retry_after = float(ra)
+            except Exception:
+                retry_after = 0.0
+
+            exp = min(max_delay, base_delay * (2 ** attempt))
+            jitter = random.uniform(0.0, 1.0)
+            sleep_s = max(retry_after, exp + jitter)
+            print(f"[HF] HTTP {e.code} at offset={offset}. Retry {attempt + 1}/{max_retries} in {sleep_s:.1f}s")
+            time.sleep(sleep_s)
+            attempt += 1
+        except (URLError, TimeoutError) as e:
+            if attempt >= max_retries:
+                raise
+            exp = min(max_delay, base_delay * (2 ** attempt))
+            jitter = random.uniform(0.0, 1.0)
+            sleep_s = exp + jitter
+            print(f"[HF] Network error at offset={offset}: {e}. Retry {attempt + 1}/{max_retries} in {sleep_s:.1f}s")
+            time.sleep(sleep_s)
+            attempt += 1
 
 
 def _extract_messages_text(row_obj):
@@ -129,6 +174,7 @@ def build_ultrachat_messages_corpus(
     config_name="default",
     split_candidates=None,
     page_size=100,
+    request_sleep=0.15,
 ):
     if split_candidates is None:
         split_candidates = ["train_sft", "train", "train_gen", "test_sft", "test"]
@@ -187,6 +233,9 @@ def build_ultrachat_messages_corpus(
 
         if consumed == 0:
             break
+
+        if request_sleep > 0:
+            time.sleep(request_sleep)
 
     pbar.close()
 
