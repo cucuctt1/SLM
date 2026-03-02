@@ -16,6 +16,11 @@ def _get_stats(corpus_words):
     return stats
 
 
+def _sentencepiece_like_pieces(text):
+    words = [w for w in text.split() if w]
+    return ["▁" + w for w in words]
+
+
 def _merge_pair(corpus_words, pair, new_id):
     a, b = pair
     new_corpus = {}
@@ -61,19 +66,28 @@ def _compile_cpp_bpe(show_progress=True):
     if check != 0:
         return None
 
-    cmd = f'g++ -O3 -std=c++17 "{src}" -o "{bin_path}"'
+    compile_cmds = [
+        ('g++ -O3 -std=c++17 -fopenmp "{src}" -o "{bin_path}"'.format(src=src, bin_path=bin_path), "openmp"),
+        ('g++ -O3 -std=c++17 "{src}" -o "{bin_path}"'.format(src=src, bin_path=bin_path), "single-thread"),
+    ]
+
     if show_progress:
         print("Compiling C++ BPE backend...")
-    t0 = time.time()
-    code = os.system(cmd)
-    dt = time.time() - t0
-    if code != 0:
+
+    for cmd, mode in compile_cmds:
+        t0 = time.time()
+        code = os.system(cmd)
+        dt = time.time() - t0
+        if code == 0:
+            if show_progress:
+                print(f"C++ BPE compile finished in {dt:.2f}s (mode={mode})")
+            return bin_path
         if show_progress:
-            print(f"C++ BPE compile failed (exit={code}) after {dt:.2f}s. Falling back to Python BPE.")
-        return None
+            print(f"C++ BPE compile attempt failed (mode={mode}, exit={code}) after {dt:.2f}s")
+
     if show_progress:
-        print(f"C++ BPE compile finished in {dt:.2f}s")
-    return bin_path
+        print("C++ BPE compile failed for all modes. Falling back to Python BPE.")
+    return None
 
 
 def _rebuild_token_to_bytes_from_merges(merges, eow_id=256):
@@ -158,11 +172,11 @@ def train_byte_level_bpe(text, target_vocab_size=50000, reserved_special=4, min_
     base_vocab_size = 257
     max_bpe_tokens = max(base_vocab_size, target_vocab_size - reserved_special)
 
-    words = [w for w in text.split() if w]
-    word_counter = Counter(words)
+    pieces = _sentencepiece_like_pieces(text)
+    word_counter = Counter(pieces)
     corpus_words = {}
-    for w, freq in word_counter.items():
-        ids = tuple(list(w.encode("utf-8", errors="ignore")) + [eow_id])
+    for piece, freq in word_counter.items():
+        ids = tuple(list(piece.encode("utf-8", errors="ignore")) + [eow_id])
         corpus_words[ids] = corpus_words.get(ids, 0) + int(freq)
 
     merges = []
@@ -225,6 +239,10 @@ def apply_bpe_to_word(word, merges_ranked, eow_id=256):
             changed = True
 
     return [t for t in ids if t != eow_id]
+
+
+def apply_bpe_to_piece(piece, merges_ranked, eow_id=256):
+    return apply_bpe_to_word(piece, merges_ranked, eow_id=eow_id)
 
 
 def save_bpe_files(output_dir, vocab_json, merges):

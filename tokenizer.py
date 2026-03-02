@@ -3,7 +3,7 @@ import json
 import numpy as np
 from tqdm import tqdm
 
-from bpe import train_byte_level_bpe, apply_bpe_to_word, save_bpe_files, load_bpe_files
+from bpe import train_byte_level_bpe, apply_bpe_to_piece, save_bpe_files, load_bpe_files
 
 
 class ByteLevelBPETokenizer:
@@ -32,6 +32,10 @@ class ByteLevelBPETokenizer:
         self.eow_id = 256
         self.word_cache = {}
         self.max_word_cache_size = 200_000
+
+    def _text_to_pieces(self, text):
+        words = [w for w in text.split() if w]
+        return ["▁" + w for w in words]
 
     def _build_vocab_maps(self):
         self.vocab = {}
@@ -115,14 +119,14 @@ class ByteLevelBPETokenizer:
         if add_special_tokens:
             token_ids.append(self.bos_id)
 
-        words = [w for w in text.split() if w]
-        for w in words:
-            bpe_ids = self.word_cache.get(w)
+        pieces = self._text_to_pieces(text)
+        for piece in pieces:
+            bpe_ids = self.word_cache.get(piece)
             if bpe_ids is None:
-                bpe_ids = apply_bpe_to_word(w, self.merges_ranked, eow_id=self.eow_id)
+                bpe_ids = apply_bpe_to_piece(piece, self.merges_ranked, eow_id=self.eow_id)
                 if len(self.word_cache) >= self.max_word_cache_size:
                     self.word_cache.clear()
-                self.word_cache[w] = bpe_ids
+                self.word_cache[piece] = bpe_ids
             for tid in bpe_ids:
                 if tid < self.vocab_size:
                     token_ids.append(tid)
@@ -148,8 +152,8 @@ class ByteLevelBPETokenizer:
         }
 
     def decode(self, token_ids, skip_special_tokens=True):
-        words = []
-        current_bytes = []
+        parts = []
+        current_bytes = bytearray()
 
         special_ids = {self.pad_id, self.bos_id, self.eos_id, self.unk_id}
 
@@ -159,23 +163,21 @@ class ByteLevelBPETokenizer:
 
             if tid == self.unk_id:
                 if current_bytes:
-                    words.append(bytes(current_bytes).decode("utf-8", errors="ignore"))
-                    current_bytes = []
-                words.append("<unk>")
+                    parts.append(bytes(current_bytes).decode("utf-8", errors="ignore"))
+                    current_bytes = bytearray()
+                parts.append("▁<unk>")
                 continue
 
             byte_seq = self.token_to_bytes.get(str(int(tid)), [])
-            if len(byte_seq) == 0:
-                if current_bytes:
-                    words.append(bytes(current_bytes).decode("utf-8", errors="ignore"))
-                    current_bytes = []
-            else:
+            if len(byte_seq) > 0:
                 current_bytes.extend(byte_seq)
 
         if current_bytes:
-            words.append(bytes(current_bytes).decode("utf-8", errors="ignore"))
+            parts.append(bytes(current_bytes).decode("utf-8", errors="ignore"))
 
-        return " ".join([w for w in words if w])
+        raw = "".join(parts)
+        text = raw.replace("▁", " ")
+        return " ".join(text.split())
 
     def encode_batch(self, texts, max_length=None, padding=True, truncation=True):
         input_ids = []
