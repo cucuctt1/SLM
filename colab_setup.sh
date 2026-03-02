@@ -2,7 +2,7 @@
 set -e
 
 echo "Installing required libraries (without reinstalling torch)..."
-pip install -q kaggle tqdm numpy
+pip install -q kaggle tqdm numpy sentencepiece
 
 mkdir -p /content/data
 mkdir -p /content/checkpoints

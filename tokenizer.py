@@ -1,5 +1,8 @@
 import os
 import json
+import base64
+import tempfile
+import importlib
 import numpy as np
 from tqdm import tqdm
 
@@ -32,6 +35,9 @@ class ByteLevelBPETokenizer:
         self.eow_id = 256
         self.word_cache = {}
         self.max_word_cache_size = 200_000
+        self.backend = "custom"
+        self.spm_model_b64 = None
+        self.spm_processor = None
 
     def _text_to_pieces(self, text):
         words = [w for w in text.split() if w]
@@ -87,7 +93,87 @@ class ByteLevelBPETokenizer:
                 if len(self.vocab) == self.vocab_size:
                     break
 
-    def train(self, text):
+    def _init_sentencepiece_processor_from_b64(self, model_b64):
+        try:
+            spm = importlib.import_module("sentencepiece")
+        except Exception as e:
+            raise ImportError("sentencepiece is required for sentencepiece backend. Install with: pip install sentencepiece") from e
+
+        model_bytes = base64.b64decode(model_b64.encode("utf-8"))
+        proc = spm.SentencePieceProcessor()
+        proc.LoadFromSerializedProto(model_bytes)
+        self.spm_processor = proc
+
+    def _train_sentencepiece(self, text):
+        try:
+            spm = importlib.import_module("sentencepiece")
+        except Exception as e:
+            raise ImportError("sentencepiece is required for sentencepiece backend. Install with: pip install sentencepiece") from e
+
+        with tempfile.TemporaryDirectory() as td:
+            input_path = os.path.join(td, "spm_input.txt")
+            model_prefix = os.path.join(td, "spm_bpe")
+
+            with open(input_path, "w", encoding="utf-8") as f:
+                f.write(text)
+
+            spm.SentencePieceTrainer.Train(
+                input=input_path,
+                model_prefix=model_prefix,
+                model_type="bpe",
+                vocab_size=int(self.vocab_size),
+                character_coverage=1.0,
+                bos_id=1,
+                eos_id=2,
+                unk_id=3,
+                pad_id=0,
+                bos_piece=self.bos_token,
+                eos_piece=self.eos_token,
+                unk_piece=self.unk_token,
+                pad_piece=self.pad_token,
+            )
+
+            model_path = model_prefix + ".model"
+            with open(model_path, "rb") as mf:
+                model_bytes = mf.read()
+
+        self.spm_model_b64 = base64.b64encode(model_bytes).decode("utf-8")
+        self._init_sentencepiece_processor_from_b64(self.spm_model_b64)
+
+        self.backend = "sentencepiece"
+        self.pad_id = int(self.spm_processor.pad_id())
+        self.bos_id = int(self.spm_processor.bos_id())
+        self.eos_id = int(self.spm_processor.eos_id())
+        self.unk_id = int(self.spm_processor.unk_id())
+        self.eow_id = 256
+
+        self.vocab = {}
+        self.id_to_token = {}
+        self.token_to_bytes = {}
+        self.byte_string_to_id = {}
+        self.merges = []
+        self.merges_ranked = {}
+
+        size = int(self.spm_processor.GetPieceSize())
+        for tid in range(size):
+            piece = self.spm_processor.IdToPiece(tid)
+            self.vocab[piece] = tid
+            self.id_to_token[str(tid)] = piece
+            b = list(piece.encode("utf-8", errors="ignore"))
+            self.token_to_bytes[str(tid)] = b
+            self.byte_string_to_id[bytes(b)] = tid
+
+        self.word_cache = {}
+
+    def train(self, text, use_sentencepiece_package=False):
+        if use_sentencepiece_package:
+            self._train_sentencepiece(text)
+            return
+
+        self.backend = "custom"
+        self.spm_model_b64 = None
+        self.spm_processor = None
+
         bpe_state = train_byte_level_bpe(
             text=text,
             target_vocab_size=self.vocab_size,
@@ -114,6 +200,25 @@ class ByteLevelBPETokenizer:
     def encode(self, text, add_special_tokens=True, max_length=None, padding=False, truncation=True):
         if max_length is None:
             max_length = self.context_length
+
+        if self.backend == "sentencepiece":
+            token_ids = [int(x) for x in self.spm_processor.EncodeAsIds(text)]
+            if add_special_tokens:
+                token_ids = [self.bos_id] + token_ids + [self.eos_id]
+
+            if truncation and len(token_ids) > max_length:
+                token_ids = token_ids[:max_length]
+
+            attention_mask = [1] * len(token_ids)
+            if padding and len(token_ids) < max_length:
+                pad_len = max_length - len(token_ids)
+                token_ids = token_ids + [self.pad_id] * pad_len
+                attention_mask = attention_mask + [0] * pad_len
+
+            return {
+                "input_ids": token_ids,
+                "attention_mask": attention_mask,
+            }
 
         token_ids = []
         if add_special_tokens:
@@ -152,6 +257,13 @@ class ByteLevelBPETokenizer:
         }
 
     def decode(self, token_ids, skip_special_tokens=True):
+        if self.backend == "sentencepiece":
+            ids = token_ids
+            if skip_special_tokens:
+                special_ids = {self.pad_id, self.bos_id, self.eos_id}
+                ids = [int(t) for t in token_ids if int(t) not in special_ids]
+            return self.spm_processor.DecodeIds(ids)
+
         parts = []
         current_bytes = bytearray()
 
@@ -241,6 +353,7 @@ class ByteLevelBPETokenizer:
         os.makedirs(output_dir, exist_ok=True)
         merges_dump = self.merges
         vocab_dump = {
+            "backend": self.backend,
             "vocab_size": self.vocab_size,
             "context_length": self.context_length,
             "pad_id": self.pad_id,
@@ -248,6 +361,7 @@ class ByteLevelBPETokenizer:
             "eos_id": self.eos_id,
             "unk_id": self.unk_id,
             "eow_id": self.eow_id,
+            "spm_model_b64": self.spm_model_b64,
             "token_to_bytes": self.token_to_bytes,
             "vocab": self.vocab,
             "id_to_token": self.id_to_token,
@@ -256,6 +370,7 @@ class ByteLevelBPETokenizer:
 
     def load(self, output_dir):
         vocab_dump, merges_dump = load_bpe_files(output_dir)
+        self.backend = vocab_dump.get("backend", "custom")
         self.vocab_size = vocab_dump["vocab_size"]
         self.context_length = vocab_dump["context_length"]
         self.pad_id = vocab_dump["pad_id"]
@@ -263,6 +378,7 @@ class ByteLevelBPETokenizer:
         self.eos_id = vocab_dump["eos_id"]
         self.unk_id = vocab_dump["unk_id"]
         self.eow_id = vocab_dump["eow_id"]
+        self.spm_model_b64 = vocab_dump.get("spm_model_b64")
         self.token_to_bytes = vocab_dump["token_to_bytes"]
         self.vocab = vocab_dump["vocab"]
         self.id_to_token = vocab_dump["id_to_token"]
@@ -276,6 +392,10 @@ class ByteLevelBPETokenizer:
         self.byte_string_to_id = {}
         for k, byte_seq in self.token_to_bytes.items():
             self.byte_string_to_id[bytes(byte_seq)] = int(k)
+        if self.backend == "sentencepiece":
+            self._init_sentencepiece_processor_from_b64(self.spm_model_b64)
+        else:
+            self.spm_processor = None
         self.word_cache = {}
 
     def try_load(self, output_dir):
@@ -290,6 +410,7 @@ class ByteLevelBPETokenizer:
 
     def get_state(self):
         return {
+            "backend": self.backend,
             "vocab_size": self.vocab_size,
             "context_length": self.context_length,
             "pad_id": self.pad_id,
@@ -297,6 +418,7 @@ class ByteLevelBPETokenizer:
             "eos_id": self.eos_id,
             "unk_id": self.unk_id,
             "eow_id": self.eow_id,
+            "spm_model_b64": self.spm_model_b64,
             "token_to_bytes": self.token_to_bytes,
             "vocab": self.vocab,
             "id_to_token": self.id_to_token,
@@ -304,6 +426,7 @@ class ByteLevelBPETokenizer:
         }
 
     def set_state(self, state):
+        self.backend = state.get("backend", "custom")
         self.vocab_size = state["vocab_size"]
         self.context_length = state["context_length"]
         self.pad_id = state["pad_id"]
@@ -311,6 +434,7 @@ class ByteLevelBPETokenizer:
         self.eos_id = state["eos_id"]
         self.unk_id = state["unk_id"]
         self.eow_id = state["eow_id"]
+        self.spm_model_b64 = state.get("spm_model_b64")
         self.token_to_bytes = state["token_to_bytes"]
         self.vocab = state["vocab"]
         self.id_to_token = state["id_to_token"]
@@ -324,3 +448,7 @@ class ByteLevelBPETokenizer:
         self.byte_string_to_id = {}
         for k, byte_seq in self.token_to_bytes.items():
             self.byte_string_to_id[bytes(byte_seq)] = int(k)
+        if self.backend == "sentencepiece":
+            self._init_sentencepiece_processor_from_b64(self.spm_model_b64)
+        else:
+            self.spm_processor = None

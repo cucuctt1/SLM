@@ -42,6 +42,9 @@ class Config:
         self.train_split = 0.9
         self.max_corpus_chars = 60_000_000
         self.tokenizer_train_chars = 20_000_000
+        self.use_sentencepiece_package = True
+        self.force_retrain_tokenizer = True
+        self.force_retokenize = True
 
         self.checkpoint_dir = "/content/checkpoints"
         self.tokenizer_dir = "/content/tokenizer"

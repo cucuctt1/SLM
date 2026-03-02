@@ -189,15 +189,21 @@ def main():
     print(f"Corpus lines={num_lines:,}, chars={num_chars:,}, path={corpus_path}")
 
     tokenizer = ByteLevelBPETokenizer(vocab_size=cfg.vocab_size, context_length=cfg.context_length)
-    if tokenizer.try_load(cfg.tokenizer_dir):
+    force_retrain_tokenizer = bool(getattr(cfg, "force_retrain_tokenizer", False))
+    tokenizer_loaded = (not force_retrain_tokenizer) and tokenizer.try_load(cfg.tokenizer_dir)
+
+    if tokenizer_loaded:
         print(f"[{timestamp()}] Loading existing tokenizer...")
     else:
+        if force_retrain_tokenizer:
+            print(f"[{timestamp()}] force_retrain_tokenizer=True -> retraining tokenizer")
         print(f"[{timestamp()}] Training byte-level BPE tokenizer to vocab={cfg.vocab_size}...")
         with open(corpus_path, "r", encoding="utf-8", errors="ignore") as f:
             corpus_text = f.read(getattr(cfg, "tokenizer_train_chars", 20_000_000))
-        tokenizer.train(corpus_text)
+        tokenizer.train(corpus_text, use_sentencepiece_package=getattr(cfg, "use_sentencepiece_package", False))
         tokenizer.save(cfg.tokenizer_dir)
 
+    print(f"Tokenizer backend: {getattr(tokenizer, 'backend', 'custom')}")
     print(f"Tokenizer vocab size actual: {len(tokenizer.vocab)}")
 
     print(f"[{timestamp()}] Preparing tokenized train/val splits (90/10)...")
@@ -207,6 +213,7 @@ def main():
         train_tokens_path=cfg.train_tokens_path,
         val_tokens_path=cfg.val_tokens_path,
         train_split=cfg.train_split,
+        force_retokenize=bool(getattr(cfg, "force_retokenize", False) or force_retrain_tokenizer),
     )
     print(f"Train tokens={train_count:,}, Val tokens={val_count:,}")
 

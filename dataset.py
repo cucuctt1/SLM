@@ -189,8 +189,8 @@ def build_english_corpus(extract_dir, corpus_path, max_chars=120_000_000):
     return corpus_path, len(lines), chars
 
 
-def prepare_train_val_tokens(corpus_path, tokenizer, train_tokens_path, val_tokens_path, train_split=0.9):
-    if os.path.exists(train_tokens_path) and os.path.exists(val_tokens_path):
+def prepare_train_val_tokens(corpus_path, tokenizer, train_tokens_path, val_tokens_path, train_split=0.9, force_retokenize=False):
+    if (not force_retokenize) and os.path.exists(train_tokens_path) and os.path.exists(val_tokens_path):
         print("[TOK] Reusing existing train/val token files")
         train_ids = np.load(train_tokens_path, mmap_mode="r")
         val_ids = np.load(val_tokens_path, mmap_mode="r")
