@@ -50,6 +50,7 @@ class Config:
 
         self.checkpoint_dir = "/content/checkpoints"
         self.tokenizer_dir = "/content/tokenizer"
+        self.tokenizer_pack_path = "/content/tokenizer/tokenizer.pack.json"
 
         self.eval_every_epochs = 1
         self.generate_prompt = "User: Explain what overfitting is in simple terms.\nAssistant:"

@@ -203,11 +203,20 @@ def main():
     print(f"Corpus lines={num_lines:,}, chars={num_chars:,}, path={corpus_path}")
 
     tokenizer = ByteLevelBPETokenizer(vocab_size=cfg.vocab_size, context_length=cfg.context_length)
+    tokenizer_pack_path = getattr(cfg, "tokenizer_pack_path", os.path.join(cfg.tokenizer_dir, "tokenizer.pack.json"))
     force_retrain_tokenizer = bool(getattr(cfg, "force_retrain_tokenizer", False))
-    tokenizer_loaded = (not force_retrain_tokenizer) and tokenizer.try_load(cfg.tokenizer_dir)
+    tokenizer_loaded = False
+    if not force_retrain_tokenizer:
+        if tokenizer.try_load_pack(tokenizer_pack_path):
+            tokenizer_loaded = True
+            print(f"[{timestamp()}] Loading tokenizer pack: {tokenizer_pack_path}")
+        elif tokenizer.try_load(cfg.tokenizer_dir):
+            tokenizer_loaded = True
+            print(f"[{timestamp()}] Loading existing tokenizer files...")
+            tokenizer.save_pack(tokenizer_pack_path)
 
     if tokenizer_loaded:
-        print(f"[{timestamp()}] Loading existing tokenizer...")
+        pass
     else:
         if force_retrain_tokenizer:
             print(f"[{timestamp()}] force_retrain_tokenizer=True -> retraining tokenizer")
@@ -216,6 +225,7 @@ def main():
             corpus_text = f.read(getattr(cfg, "tokenizer_train_chars", 20_000_000))
         tokenizer.train(corpus_text, use_sentencepiece_package=getattr(cfg, "use_sentencepiece_package", False))
         tokenizer.save(cfg.tokenizer_dir)
+        tokenizer.save_pack(tokenizer_pack_path)
 
     print(f"Tokenizer backend: {getattr(tokenizer, 'backend', 'custom')}")
     print(f"Tokenizer vocab size actual: {len(tokenizer.vocab)}")

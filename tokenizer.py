@@ -368,6 +368,40 @@ class ByteLevelBPETokenizer:
         }
         save_bpe_files(output_dir, vocab_dump, merges_dump)
 
+    def save_pack(self, pack_path):
+        os.makedirs(os.path.dirname(pack_path), exist_ok=True)
+        payload = {
+            "format": "slm_tokenizer_pack_v1",
+            "state": self.get_state(),
+        }
+        with open(pack_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+
+    def load_pack(self, pack_path):
+        with open(pack_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+
+        if payload.get("format") != "slm_tokenizer_pack_v1":
+            raise ValueError("Unsupported tokenizer pack format")
+
+        state = payload.get("state")
+        if not isinstance(state, dict):
+            raise ValueError("Tokenizer pack missing valid state")
+
+        self.set_state(state)
+        self.word_cache = {}
+
+    def try_load_pack(self, pack_path):
+        if not os.path.exists(pack_path):
+            return False
+        try:
+            self.load_pack(pack_path)
+        except Exception:
+            return False
+        if len(self.vocab) != self.vocab_size:
+            return False
+        return True
+
     def load(self, output_dir):
         vocab_dump, merges_dump = load_bpe_files(output_dir)
         self.backend = vocab_dump.get("backend", "custom")
