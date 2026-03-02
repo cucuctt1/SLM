@@ -7,27 +7,29 @@ class Config:
 
         self.device = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES", "") != "" or os.environ.get("COLAB_GPU") else ("cuda" if __import__("torch").cuda.is_available() else "cpu")
 
+
         self.vocab_size = 50_000
         self.context_length = 512
 
         self.dropout = 0.1
         self.bias = True
-        self.n_layers = 8
-        self.d_model = 512
-        self.n_heads = 8
-        self.d_ff = 2048
-        self.batch_size = 8
-        self.grad_accum_steps = 16
+
+        self.n_layers = 16
+        self.d_model = 768
+        self.n_heads = 12
+        self.d_ff = 3072
+
+        self.batch_size = 16
+        self.grad_accum_steps = 2
         self.eval_batch_size = 2
         self.epochs = 8
-        self.max_steps = None
 
-        self.learning_rate = 3e-4
-        self.min_lr = 3e-5
+        self.learning_rate = 2e-4
+        self.min_lr = 2e-5
         self.weight_decay = 0.1
         self.betas = (0.9, 0.95)
         self.grad_clip = 1.0
-        self.warmup_steps = 200
+        self.warmup_steps = 500
 
         self.use_amp = True
         self.grad_checkpointing = False
