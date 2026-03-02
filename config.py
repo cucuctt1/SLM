@@ -33,14 +33,14 @@ class Config:
         self.use_amp = True
         self.grad_checkpointing = False
 
-        self.dataset_slug = "carlosgdcj/genius-song-lyrics-with-language-information"
+        self.dataset_slug = "thoughtvector/customer-support-on-twitter"
         self.dataset_download_dir = "/content/data"
         self.dataset_extract_dir = "/content/data/extracted"
         self.corpus_path = "/content/data/corpus.txt"
         self.train_tokens_path = "/content/data/train_tokens.npy"
         self.val_tokens_path = "/content/data/val_tokens.npy"
         self.train_split = 0.9
-        self.max_corpus_chars = 120_000_000
+        self.max_corpus_chars = 60_000_000
         self.tokenizer_train_chars = 20_000_000
 
         self.checkpoint_dir = "/content/checkpoints"

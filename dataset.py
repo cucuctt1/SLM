@@ -27,10 +27,13 @@ def download_and_extract_kaggle_dataset(dataset_slug, download_dir, extract_dir,
     os.makedirs(download_dir, exist_ok=True)
     os.makedirs(extract_dir, exist_ok=True)
 
-    marker = os.path.join(extract_dir, ".extracted_done")
+    safe_slug = dataset_slug.replace("/", "__")
+    marker = os.path.join(extract_dir, f".extracted_{safe_slug}.done")
     if os.path.exists(marker) and not force:
+        print(f"[DATA] Reusing extracted dataset at: {extract_dir}")
         return extract_dir
 
+    print(f"[DATA] Downloading dataset: {dataset_slug}")
     api = authenticate_kaggle()
     api.dataset_download_files(dataset=dataset_slug, path=download_dir, unzip=False, quiet=False)
 
@@ -43,6 +46,7 @@ def download_and_extract_kaggle_dataset(dataset_slug, download_dir, extract_dir,
         zips.sort(key=lambda x: os.path.getsize(os.path.join(download_dir, x)), reverse=True)
         zip_path = os.path.join(download_dir, zips[0])
 
+    print(f"[DATA] Extracting zip: {os.path.basename(zip_path)}")
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(extract_dir)
 
@@ -100,7 +104,8 @@ def _extract_text_from_csv(file_path, max_chars, language_column="language", lan
                     lang_col_exact = c
                     break
 
-        for row in reader:
+        row_iter = tqdm(reader, desc=f"CSV {os.path.basename(file_path)}", leave=False)
+        for row in row_iter:
             if lang_col_exact is not None:
                 lang = str(row.get(lang_col_exact, "")).lower().strip()
                 if lang and lang != lang_value:
@@ -116,6 +121,7 @@ def _extract_text_from_csv(file_path, max_chars, language_column="language", lan
                 line = " ".join(text_parts)
                 collected.append(line)
                 total_chars += len(line) + 1
+                row_iter.set_postfix(chars=f"{total_chars:,}")
                 if total_chars >= max_chars:
                     break
 
@@ -127,18 +133,21 @@ def build_english_corpus(extract_dir, corpus_path, max_chars=120_000_000):
     if not files:
         raise FileNotFoundError("No candidate text/csv/jsonl files found in extracted dataset.")
 
+    print(f"[DATA] Building corpus from {len(files)} files (target chars={max_chars:,})")
     lines = []
     chars = 0
 
-    for fp in files:
+    file_iter = tqdm(files, desc="Corpus files", leave=False)
+    for fp in file_iter:
         lower = fp.lower()
+        file_iter.set_postfix(processed_chars=f"{chars:,}")
         if lower.endswith(".csv"):
             extracted, n = _extract_text_from_csv(fp, max_chars=max_chars - chars)
             lines.extend(extracted)
             chars += n
         elif lower.endswith(".txt"):
             with open(fp, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
+                for line in tqdm(f, desc=f"TXT {os.path.basename(fp)}", leave=False):
                     line = clean_text(line)
                     if not line:
                         continue
@@ -148,7 +157,7 @@ def build_english_corpus(extract_dir, corpus_path, max_chars=120_000_000):
                         break
         elif lower.endswith(".jsonl"):
             with open(fp, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
+                for line in tqdm(f, desc=f"JSONL {os.path.basename(fp)}", leave=False):
                     line = line.strip()
                     if not line:
                         continue
@@ -182,12 +191,14 @@ def build_english_corpus(extract_dir, corpus_path, max_chars=120_000_000):
 
 def prepare_train_val_tokens(corpus_path, tokenizer, train_tokens_path, val_tokens_path, train_split=0.9):
     if os.path.exists(train_tokens_path) and os.path.exists(val_tokens_path):
+        print("[TOK] Reusing existing train/val token files")
         train_ids = np.load(train_tokens_path, mmap_mode="r")
         val_ids = np.load(val_tokens_path, mmap_mode="r")
         return int(train_ids.shape[0]), int(val_ids.shape[0])
 
+    print("[TOK] Tokenizing corpus into train/val arrays...")
     with open(corpus_path, "r", encoding="utf-8", errors="ignore") as f:
-        line_iter = tqdm(f, desc="Reading corpus", leave=False)
+        line_iter = tqdm(f, desc="Tokenizing corpus lines", leave=False)
         cleaned_lines = (clean_text(line) for line in line_iter)
         ids = tokenizer.encode_lines_to_numpy(
             cleaned_lines,
